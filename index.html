@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GPS Lock Synth</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    padding: 2em;
+    background: #222;
+    color: #eee;
+  }
+  button {
+    font-size: 1.2em;
+    padding: 0.7em 1.2em;
+    margin: 1em 0;
+    cursor: pointer;
+    background: #0a84ff;
+    border: none;
+    border-radius: 5px;
+    color: white;
+  }
+  #status {
+    margin: 1em 0;
+    font-size: 1em;
+    min-height: 1.4em;
+  }
+  #freq {
+    font-weight: bold;
+    font-size: 2em;
+    margin-top: 1em;
+    letter-spacing: 0.1em;
+  }
+</style>
+</head>
+<body>
+
+<h1>GPS Point Lock Synth</h1>
+<button id="lockBtn">Lock Position & Start Synth</button>
+<div id="status">Click the button to lock your position.</div>
+<div>Current frequency: <span id="freq">--</span> Hz</div>
+
+<script>
+(() => {
+  const lockBtn = document.getElementById('lockBtn');
+  const status = document.getElementById('status');
+  const freqDisplay = document.getElementById('freq');
+
+  let audioCtx = null;
+  let osc = null;
+  let watchId = null;
+  let lockedPos = null;
+
+  const minFreq = 200;
+  const maxFreq = 2000;
+  const maxDistance = 100; // meters max distance to map frequency
+
+  function distanceMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000; // Earth radius meters
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  function mapRange(value, inMin, inMax, outMin, outMax) {
+    return outMin + (value - inMin) * (outMax - outMin) / (inMax - inMin);
+  }
+
+  function startAudio() {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    if (!osc) {
+      osc = audioCtx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = minFreq;
+      osc.connect(audioCtx.destination);
+      osc.start();
+    }
+  }
+
+  function stopAudio() {
+    if (osc) {
+      osc.stop();
+      osc.disconnect();
+      osc = null;
+    }
+    if (audioCtx) {
+      audioCtx.close();
+      audioCtx = null;
+    }
+  }
+
+  function updateFrequency(distance) {
+    const d = Math.min(distance, maxDistance);
+    const freq = mapRange(d, 0, maxDistance, minFreq, maxFreq);
+    if (osc && audioCtx) {
+      osc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.1);
+      freqDisplay.textContent = freq.toFixed(1);
+    }
+  }
+
+  function onPositionUpdate(position) {
+    if (!lockedPos) return;
+
+    const dist = distanceMeters(
+      lockedPos.latitude, lockedPos.longitude,
+      position.coords.latitude, position.coords.longitude
+    );
+
+    updateFrequency(dist);
+    status.textContent = `Distance from locked point: ${dist.toFixed(1)} meters`;
+  }
+
+  function onPositionError(err) {
+    status.textContent = `Geolocation error: ${err.message} (code ${err.code})`;
+  }
+
+  lockBtn.addEventListener('click', () => {
+    if (!navigator.geolocation) {
+      status.textContent = 'Geolocation is not supported by your browser.';
+      return;
+    }
+
+    lockBtn.disabled = true;
+    status.textContent = 'Requesting position permission...';
+
+    // Start Audio on user gesture
+    startAudio();
+
+    // Get current position to lock point
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        lockedPos = {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude
+        };
+        status.textContent = `Position locked at ${lockedPos.latitude.toFixed(5)}, ${lockedPos.longitude.toFixed(5)}. Watching position...`;
+
+        // Start watching position changes
+        if (watchId) navigator.geolocation.clearWatch(watchId);
+        watchId = navigator.geolocation.watchPosition(
+          onPositionUpdate,
+          onPositionError,
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        );
+      },
+      (err) => {
+        status.textContent = `Error locking position: ${err.message} (code ${err.code})`;
+        lockBtn.disabled = false;
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (watchId) navigator.geolocation.clearWatch(watchId);
+    stopAudio();
+  });
+})();
+</script>
+
+</body>
+</html>
