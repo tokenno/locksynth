@@ -1,282 +1,96 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>GPS + Accelerometer Synth</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <title>GPS Distance Synth</title>
   <style>
-    body { font-family: sans-serif; text-align: center; padding: 2em; }
-    canvas { margin-top: 2em; }
+    body { font-family: sans-serif; text-align: center; margin: 2em; }
+    canvas { border: 1px solid black; margin-top: 1em; }
   </style>
 </head>
 <body>
-  <h1>GPS Synth: Distance-Based Frequency</h1>
-  <p id="status">Waiting for position lock...</p>
-  <label for="midiOut">MIDI Output:</label>
-  <select id="midiOut"></select>
+  <h1>GPS Distance Synth</h1>
+  <button id="startButton">Start Synth</button>
+  <p id="status">Waiting for user interaction...</p>
   <canvas id="visual" width="300" height="100"></canvas>
 
   <script>
-    let lockedPosition = null;
-    let audioCtx = null;
-    let oscillator = null;
-    let gain = null;
-    let currentFreq = 0;
-    let midiAccess = null;
-    let midiOutput = null;
-    const minFreq = 200;
-    const maxFreq = 2000;
-    const maxDistance = 100; // meters
+    let audioCtx, osc, gain;
+    let baseLat = null, baseLon = null;
+    let freqMin = 200;
+    let freqMax = 2000;
+    let watchID = null;
 
-    const canvas = document.getElementById('visual');
-    const ctx = canvas.getContext('2d');
+    const status = document.getElementById("status");
+    const canvas = document.getElementById("visual");
+    const ctx = canvas.getContext("2d");
 
-    function initAudio() {
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        oscillator = audioCtx.createOscillator();
-        gain = audioCtx.createGain();
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(minFreq, audioCtx.currentTime);
-        oscillator.connect(gain).connect(audioCtx.destination);
-        oscillator.start();
-      }
+    function startAudio() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      osc = audioCtx.createOscillator();
+      gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
     }
 
-    function updateFrequency(distance) {
-      let ratio = Math.min(distance / maxDistance, 1);
-      let freq = minFreq + ratio * (maxFreq - minFreq);
-      if (audioCtx && oscillator) oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
-      currentFreq = freq;
-      draw(freq);
-      if (midiOutput) {
-        let midiNote = Math.floor(69 + 12 * Math.log2(freq / 440));
-        midiOutput.send([0x90, midiNote, 100]);
-        setTimeout(() => midiOutput.send([0x80, midiNote, 0]), 100);
-      }
-    }
-
-    function draw(freq) {
+    function updateVisual(freq) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'blue';
-      ctx.fillRect(0, canvas.height - freq / 20, canvas.width, 5);
-      ctx.fillText(`Frequency: ${Math.round(freq)} Hz`, 10, 20);
+      ctx.fillStyle = "blue";
+      let width = (freq - freqMin) / (freqMax - freqMin) * canvas.width;
+      ctx.fillRect(0, 0, width, canvas.height);
     }
 
-    function getDistance(lat1, lon1, lat2, lon2) {
-      const R = 6371e3; // metres
-      const φ1 = lat1 * Math.PI/180;
-      const φ2 = lat2 * Math.PI/180;
-      const Δφ = (lat2 - lat1) * Math.PI/180;
-      const Δλ = (lon2 - lon1) * Math.PI/180;
-      const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-                Math.cos(φ1) * Math.cos(φ2) *
-                Math.sin(Δλ/2) * Math.sin(Δλ/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return R * c;
+    function haversineDistance(lat1, lon1, lat2, lon2) {
+      const R = 6371e3; // meters
+      const toRad = deg => deg * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat/2)**2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                Math.sin(dLon/2)**2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     function onPositionUpdate(pos) {
-      if (!lockedPosition) return;
-      const { latitude, longitude } = pos.coords;
-      const distance = getDistance(latitude, longitude, lockedPosition.latitude, lockedPosition.longitude);
-      updateFrequency(distance);
+      const lat = pos.coords.latitude;
+      const lon = pos.coords.longitude;
+
+      if (baseLat === null || baseLon === null) {
+        baseLat = lat;
+        baseLon = lon;
+        status.textContent = "Position locked. Move around.";
+        return;
+      }
+
+      const distance = haversineDistance(baseLat, baseLon, lat, lon);
+      const clampedDistance = Math.min(distance, 100); // cap to 100m for mapping
+      const freq = freqMin + (freqMax - freqMin) * (clampedDistance / 100);
+      if (osc) osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+      status.textContent = `Distance: ${distance.toFixed(2)} m — Frequency: ${Math.round(freq)} Hz`;
+      updateVisual(freq);
     }
 
     function onPositionError(err) {
-      document.getElementById('status').textContent = `Geolocation error: ${err.message}`;
+      status.textContent = `Geolocation Error: ${err.message}`;
     }
 
-    function watchPosition() {
-  <!DOCTYPE html>
-<html>
-<head>
-  <title>GPS + Accelerometer Synth</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: sans-serif; text-align: center; padding: 2em; }
-    canvas { margin-top: 2em; }
-  </style>
-</head>
-<body>
-  <h1>GPS Synth: Distance-Based Frequency</h1>
-  <p id="status">Waiting for position lock...</p>
-  <label for="midiOut">MIDI Output:</label>
-  <select id="midiOut"></select>
-  <canvas id="visual" width="300" height="100"></canvas>
-
-  <script>
-    let lockedPosition = null;
-    let audioCtx = null;
-    let oscillator = null;
-    let gain = null;
-    let currentFreq = 0;
-    let midiAccess = null;
-    let midiOutput = null;
-    const minFreq = 200;
-    const maxFreq = 2000;
-    const maxDistance = 100; // meters
-
-    const canvas = document.getElementById('visual');
-    const ctx = canvas.getContext('2d');
-
-    function initAudio() {
-      if (!audioCtx) {
-        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        oscillator = audioCtx.createOscillator();
-        gain = audioCtx.createGain();
-        oscillator.type = 'sine';
-        oscillator.frequency.setValueAtTime(minFreq, audioCtx.currentTime);
-        oscillator.connect(gain).connect(audioCtx.destination);
-        oscillator.start();
-      }
-    }
-
-    function updateFrequency(distance) {
-      let ratio = Math.min(distance / maxDistance, 1);
-      let freq = minFreq + ratio * (maxFreq - minFreq);
-      if (audioCtx && oscillator) oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
-      currentFreq = freq;
-      draw(freq);
-      if (midiOutput) {
-        let midiNote = Math.floor(69 + 12 * Math.log2(freq / 440));
-        midiOutput.send([0x90, midiNote, 100]);
-        setTimeout(() => midiOutput.send([0x80, midiNote, 0]), 100);
-      }
-    }
-
-    function draw(freq) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'blue';
-      ctx.fillRect(0, canvas.height - freq / 20, canvas.width, 5);
-      ctx.fillText(`Frequency: ${Math.round(freq)} Hz`, 10, 20);
-    }
-
-    function getDistance(lat1, lon1, lat2, lon2) {
-      const R = 6371e3; // metres
-      const φ1 = lat1 * Math.PI/180;
-      const φ2 = lat2 * Math.PI/180;
-      const Δφ = (lat2 - lat1) * Math.PI/180;
-      const Δλ = (lon2 - lon1) * Math.PI/180;
-      const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-                Math.cos(φ1) * Math.cos(φ2) *
-                Math.sin(Δλ/2) * Math.sin(Δλ/2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-      return R * c;
-    }
-
-    function onPositionUpdate(pos) {
-      if (!lockedPosition) return;
-      const { latitude, longitude } = pos.coords;
-      const distance = getDistance(latitude, longitude, lockedPosition.latitude, lockedPosition.longitude);
-      updateFrequency(distance);
-    }
-
-    function onPositionError(err) {
-      document.getElementById('status').textContent = `Geolocation error: ${err.message}`;
-    }
-
-    function watchPosition() {
-      navigator.geolocation.watchPosition(onPositionUpdate, onPositionError, {
-        enableHighAccuracy: false,
-        timeout: 20000,
-        maximumAge: 30000
-      });
-    }
-
-    function watchMotion() {
-      window.addEventListener('devicemotion', e => {
-        let speed = Math.abs(e.acceleration.x || 0) + Math.abs(e.acceleration.y || 0) + Math.abs(e.acceleration.z || 0);
-        gain.gain.setValueAtTime(Math.min(speed / 10, 1), audioCtx.currentTime);
-      });
-    }
-
-    function startApp() {
-      initAudio();
-      navigator.geolocation.getCurrentPosition(pos => {
-        lockedPosition = pos.coords;
-        document.getElementById('status').textContent = `Locked at Lat: ${lockedPosition.latitude.toFixed(6)}, Lon: ${lockedPosition.longitude.toFixed(6)}`;
-        watchPosition();
-        watchMotion();
-      }, err => {
-        document.getElementById('status').textContent = `Error locking position: ${err.message}`;
-      }, {
-        enableHighAccuracy: false,
-        timeout: 20000,
-        maximumAge: 30000
-      });
-    }
-
-    // MIDI Setup
-    if (navigator.requestMIDIAccess) {
-      navigator.requestMIDIAccess().then(access => {
-        midiAccess = access;
-        const midiSelect = document.getElementById('midiOut');
-        midiAccess.outputs.forEach((output, id) => {
-          const option = document.createElement('option');
-          option.value = id;
-          option.text = output.name;
-          midiSelect.appendChild(option);
-        });
-        midiSelect.addEventListener('change', () => {
-          midiOutput = Array.from(midiAccess.outputs.values())[midiSelect.selectedIndex];
-        });
-        if (midiAccess.outputs.size > 0) midiOutput = midiAccess.outputs.values().next().value;
-      });
-    }
-
-    document.body.addEventListener('click', () => {
-      startApp();
-    }, { once: true });
+    document.getElementById("startButton").addEventListener("click", () => {
+      startAudio();
+      status.textContent = "Waiting for GPS lock...";
+      watchID = navigator.geolocation.watchPosition(
+        onPositionUpdate,
+        onPositionError,
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: 5000
+        }
+      );
+    });
   </script>
 </body>
 </html>
-    }
 
-    function watchMotion() {
-      window.addEventListener('devicemotion', e => {
-        let speed = Math.abs(e.acceleration.x || 0) + Math.abs(e.acceleration.y || 0) + Math.abs(e.acceleration.z || 0);
-        gain.gain.setValueAtTime(Math.min(speed / 10, 1), audioCtx.currentTime);
-      });
-    }
-
-    function startApp() {
-      initAudio();
-      navigator.geolocation.getCurrentPosition(pos => {
-        lockedPosition = pos.coords;
-        document.getElementById('status').textContent = `Locked at Lat: ${lockedPosition.latitude.toFixed(6)}, Lon: ${lockedPosition.longitude.toFixed(6)}`;
-        watchPosition();
-        watchMotion();
-      }, err => {
-        document.getElementById('status').textContent = `Error locking position: ${err.message}`;
-      }, {
-        enableHighAccuracy: false,
-        timeout: 20000,
-        maximumAge: 30000
-      });
-    }
-
-    // MIDI Setup
-    if (navigator.requestMIDIAccess) {
-      navigator.requestMIDIAccess().then(access => {
-        midiAccess = access;
-        const midiSelect = document.getElementById('midiOut');
-        midiAccess.outputs.forEach((output, id) => {
-          const option = document.createElement('option');
-          option.value = id;
-          option.text = output.name;
-          midiSelect.appendChild(option);
-        });
-        midiSelect.addEventListener('change', () => {
-          midiOutput = Array.from(midiAccess.outputs.values())[midiSelect.selectedIndex];
-        });
-        if (midiAccess.outputs.size > 0) midiOutput = midiAccess.outputs.values().next().value;
-      });
-    }
-
-    document.body.addEventListener('click', () => {
-      startApp();
-    }, { once: true });
-  </script>
-</body>
-</html>
 
