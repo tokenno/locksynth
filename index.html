@@ -1,256 +1,145 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>GPS Lock Synth + MIDI</title>
-<style>
-  body {
-    font-family: Arial, sans-serif;
-    text-align: center;
-    padding: 2em;
-    background: #222;
-    color: #eee;
-  }
-  button, select {
-    font-size: 1.1em;
-    padding: 0.6em 1.2em;
-    margin: 1em 0.5em 1em 0.5em;
-    cursor: pointer;
-    background: #0a84ff;
-    border: none;
-    border-radius: 5px;
-    color: white;
-  }
-  #status {
-    margin: 1em 0;
-    font-size: 1em;
-    min-height: 1.4em;
-  }
-  #freq {
-    font-weight: bold;
-    font-size: 2em;
-    margin-top: 1em;
-    letter-spacing: 0.1em;
-  }
-  label {
-    font-size: 1em;
-    margin-right: 0.5em;
-  }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Distance-Based Synth</title>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 2em; }
+    #status { margin: 1em 0; font-size: 1.2em; }
+    canvas { display: block; margin: 1em auto; background: #222; }
+  </style>
 </head>
 <body>
+  <h1>Distance-Based Synth</h1>
+  <p>Move to change the sound based on distance from locked position.</p>
+  <div id="status">Waiting for user interaction...</div>
+  <button id="lockBtn">Lock Position</button>
+  <canvas id="visual" width="300" height="100"></canvas>
+  <script>
+    let audioCtx, osc;
+    let baseLat = null, baseLon = null;
+    let watchID = null;
+    let midiOut = null;
+    let currentSpeed = 0;
 
-<h1>GPS Lock Synth + MIDI Out</h1>
+    const visual = document.getElementById('visual');
+    const ctx = visual.getContext('2d');
+    const status = document.getElementById('status');
 
-<button id="lockBtn">Lock Position & Start Synth</button>
+    let accelerationMagnitude = 0;
 
-<div>
-  <label for="midiSelect">Select MIDI Output:</label>
-  <select id="midiSelect" disabled>
-    <option>Loading MIDI devices...</option>
-  </select>
-</div>
-
-<div id="status">Click the button to lock your position.</div>
-<div>Current frequency: <span id="freq">--</span> Hz</div>
-
-<script>
-(() => {
-  const lockBtn = document.getElementById('lockBtn');
-  const status = document.getElementById('status');
-  const freqDisplay = document.getElementById('freq');
-  const midiSelect = document.getElementById('midiSelect');
-
-  let audioCtx = null;
-  let osc = null;
-  let watchId = null;
-  let lockedPos = null;
-
-  const minFreq = 200;
-  const maxFreq = 2000;
-  const maxDistance = 10; // meters, smaller for sensitivity
-
-  // MIDI
-  let midiAccess = null;
-  let midiOutput = null;
-
-  function distanceMeters(lat1, lon1, lat2, lon2) {
-    const R = 6371000; // Earth radius meters
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  }
-
-  function mapRange(value, inMin, inMax, outMin, outMax) {
-    return outMin + (value - inMin) * (outMax - outMin) / (inMax - inMin);
-  }
-
-  function freqToMidiNote(freq) {
-    // MIDI note = 69 + 12*log2(freq/440)
-    return Math.round(69 + 12 * Math.log2(freq / 440));
-  }
-
-  function startAudio() {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    if (!osc) {
-      osc = audioCtx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.value = minFreq;
-      osc.connect(audioCtx.destination);
-      osc.start();
-    }
-  }
-
-  function stopAudio() {
-    if (osc) {
-      osc.stop();
-      osc.disconnect();
-      osc = null;
-    }
-    if (audioCtx) {
-      audioCtx.close();
-      audioCtx = null;
-    }
-  }
-
-  function sendMidiNote(note) {
-    if (midiOutput) {
-      // Note On, channel 1, velocity 100
-      midiOutput.send([0x90, note, 100]);
-      // Note Off after 200 ms
-      setTimeout(() => {
-        midiOutput.send([0x80, note, 0]);
-      }, 200);
-    }
-  }
-
-  function updateFrequency(distance) {
-    const d = Math.min(distance, maxDistance);
-    const freq = mapRange(d, 0, maxDistance, minFreq, maxFreq);
-    if (osc && audioCtx) {
-      osc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.05);
-      freqDisplay.textContent = freq.toFixed(1);
-      const midiNote = freqToMidiNote(freq);
-      sendMidiNote(midiNote);
-      console.log(`Distance: ${distance.toFixed(2)} m, Freq: ${freq.toFixed(1)} Hz, MIDI Note: ${midiNote}`);
-    }
-  }
-
-  function onPositionUpdate(position) {
-    if (!lockedPos) return;
-
-    const dist = distanceMeters(
-      lockedPos.latitude, lockedPos.longitude,
-      position.coords.latitude, position.coords.longitude
-    );
-
-    updateFrequency(dist);
-    status.textContent = `Distance from locked point: ${dist.toFixed(2)} meters`;
-  }
-
-  function onPositionError(err) {
-    status.textContent = `Geolocation error: ${err.message} (code ${err.code})`;
-  }
-
-  // MIDI setup and selection
-  function onMIDISuccess(midi) {
-    midiAccess = midi;
-    refreshMIDIPorts();
-    midiAccess.onstatechange = refreshMIDIPorts;
-  }
-
-  function onMIDIFailure() {
-    status.textContent = 'Could not access your MIDI devices.';
-    midiSelect.disabled = true;
-  }
-
-  function refreshMIDIPorts() {
-    const outputs = Array.from(midiAccess.outputs.values());
-    midiSelect.innerHTML = '';
-    if (outputs.length === 0) {
-      midiSelect.innerHTML = '<option>No MIDI outputs found</option>';
-      midiSelect.disabled = true;
-      midiOutput = null;
-    } else {
-      outputs.forEach((output, i) => {
-        const option = document.createElement('option');
-        option.value = output.id;
-        option.textContent = output.name;
-        midiSelect.appendChild(option);
+    // Accelerometer
+    if (window.DeviceMotionEvent) {
+      window.addEventListener('devicemotion', (event) => {
+        const ax = event.acceleration.x || 0;
+        const ay = event.acceleration.y || 0;
+        const az = event.acceleration.z || 0;
+        accelerationMagnitude = Math.sqrt(ax*ax + ay*ay + az*az);
       });
-      midiSelect.disabled = false;
-      // Select first output by default
-      midiOutput = outputs[0];
-      midiSelect.value = midiOutput.id;
-    }
-  }
-
-  midiSelect.addEventListener('change', () => {
-    if (midiAccess) {
-      const selectedId = midiSelect.value;
-      midiOutput = midiAccess.outputs.get(selectedId) || null;
-    }
-  });
-
-  lockBtn.addEventListener('click', () => {
-    if (!navigator.geolocation) {
-      status.textContent = 'Geolocation is not supported by your browser.';
-      return;
     }
 
-    lockBtn.disabled = true;
-    status.textContent = 'Requesting position permission...';
+    function deg2rad(deg) {
+      return deg * (Math.PI / 180);
+    }
 
-    startAudio();
+    function getDistanceFromLatLonInM(lat1, lon1, lat2, lon2) {
+      const R = 6371e3; // Earth radius in m
+      const dLat = deg2rad(lat2 - lat1);
+      const dLon = deg2rad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        lockedPos = {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude
-        };
-        status.textContent = `Position locked at ${lockedPos.latitude.toFixed(5)}, ${lockedPos.longitude.toFixed(5)}. Watching position...`;
+    function updateSynth(distance) {
+      if (!osc) return;
 
-        if (watchId) navigator.geolocation.clearWatch(watchId);
-        watchId = navigator.geolocation.watchPosition(
-          onPositionUpdate,
-          onPositionError,
-          { enableHighAccuracy: true, maximumAge: 0, timeout: 2000 }
-        );
-      },
-      (err) => {
-        status.textContent = `Error locking position: ${err.message} (code ${err.code})`;
-        lockBtn.disabled = false;
-      },
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 2000 }
-    );
-  });
+      const minFreq = 200;
+      const maxFreq = 2000;
+      const clampedDist = Math.min(Math.max(distance, 0), 100);
+      const freq = minFreq + (maxFreq - minFreq) * (clampedDist / 100);
 
-  window.addEventListener('beforeunload', () => {
-    if (watchId) navigator.geolocation.clearWatch(watchId);
-    stopAudio();
-  });
+      const tempoMod = accelerationMagnitude * 20; // Arbitrary scale
 
-  // Initialize MIDI on page load
-  if (navigator.requestMIDIAccess) {
-    navigator.requestMIDIAccess().then(onMIDISuccess, onMIDIFailure);
-  } else {
-    status.textContent = 'Web MIDI API not supported in this browser.';
-    midiSelect.disabled = true;
-  }
-})();
-</script>
+      osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      status.textContent += ` | Freq: ${Math.round(freq)} Hz | Acc: ${accelerationMagnitude.toFixed(2)}`;
 
+      // MIDI Out
+      if (midiOut) {
+        const midiFreq = Math.min(127, Math.round((freq / maxFreq) * 127));
+        midiOut.send([0x90, midiFreq, 127]);
+      }
+
+      // Visual
+      ctx.clearRect(0, 0, 300, 100);
+      ctx.fillStyle = 'lime';
+      ctx.fillRect(0, 50 - (freq - minFreq) / (maxFreq - minFreq) * 50, 300, 2);
+    }
+
+    function startAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        osc = audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+        osc.connect(audioCtx.destination);
+        osc.start();
+      }
+    }
+
+    document.body.addEventListener('click', startAudio);
+
+    document.getElementById('lockBtn').onclick = () => {
+      navigator.geolocation.getCurrentPosition(pos => {
+        baseLat = pos.coords.latitude;
+        baseLon = pos.coords.longitude;
+        status.textContent = `Position locked: ${baseLat.toFixed(5)}, ${baseLon.toFixed(5)}`;
+
+        setInterval(() => {
+          navigator.geolocation.getCurrentPosition(onPositionUpdate, onPositionError, {
+            enableHighAccuracy: true,
+            timeout: 1000,
+            maximumAge: 0
+          });
+        }, 1000);
+
+   
+      }, err => {
+        status.textContent = 'Error locking position: ' + err.message;
+      }, {
+        enableHighAccuracy: true,
+        timeout: 1000,
+        maximumAge: 0
+      });
+    };
+
+    function onPositionUpdate(position) {
+      if (baseLat === null || baseLon === null) return;
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+      const dist = getDistanceFromLatLonInM(baseLat, baseLon, lat, lon);
+
+      status.textContent = `Lat: ${lat.toFixed(5)} Lon: ${lon.toFixed(5)} Acc: ${position.coords.accuracy}m Dist: ${dist.toFixed(2)}m`;
+      updateSynth(dist);
+    }
+
+    function onPositionError(err) {
+      status.textContent = 'Geolocation error: ' + err.message;
+    }
+
+    // MIDI Setup
+    if (navigator.requestMIDIAccess) {
+      navigator.requestMIDIAccess().then(midi => {
+        const outputs = [...midi.outputs.values()];
+        if (outputs.length > 0) {
+          midiOut = outputs[0];
+          console.log('MIDI ready');
+        }
+      });
+    }
+  </script>
 </body>
 </html>
-
