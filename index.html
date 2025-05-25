@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>GPS Distance Synth with MIDI</title>
+  <meta charset="UTF-8" />
+  <title>Distance-Based Synth with MIDI (10m range, log freq)</title>
   <style>
     body { font-family: sans-serif; text-align: center; margin: 2em; }
     canvas { border: 1px solid black; margin-top: 1em; }
@@ -10,18 +10,17 @@
   </style>
 </head>
 <body>
-  <h1>Distance-Based Synth</h1>
-  
+  <h1>Distance-Based Synth (10m range)</h1>
   <button id="startButton">Start Synth</button>
   
   <label>
     Min Frequency (Hz):
-    <input type="number" id="freqMinInput" value="200">
+    <input type="number" id="freqMinInput" value="200" min="20" max="20000" />
   </label>
   
   <label>
     Max Frequency (Hz):
-    <input type="number" id="freqMaxInput" value="2000">
+    <input type="number" id="freqMaxInput" value="2000" min="20" max="20000" />
   </label>
 
   <label>
@@ -68,7 +67,7 @@
       }
     }
 
-    // Audio and UI
+    // Audio setup
     function startAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       osc = audioCtx.createOscillator();
@@ -76,15 +75,22 @@
       osc.type = 'sine';
       osc.connect(gain).connect(audioCtx.destination);
       osc.start();
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime); // set moderate volume
     }
 
+    // Visualization of frequency level
     function updateVisual(freq) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "blue";
-      let width = (freq - freqMin) / (freqMax - freqMin) * canvas.width;
+      // Map frequency relative to freqMin-freqMax on canvas width
+      let width = (Math.log(freq) - Math.log(freqMin)) / (Math.log(freqMax) - Math.log(freqMin)) * canvas.width;
       ctx.fillRect(0, 0, width, canvas.height);
+      ctx.fillStyle = "black";
+      ctx.font = "14px sans-serif";
+      ctx.fillText(freq.toFixed(1) + " Hz", 10, canvas.height / 2 + 5);
     }
 
+    // Haversine formula for meters distance
     function haversineDistance(lat1, lon1, lat2, lon2) {
       const R = 6371e3; // meters
       const toRad = deg => deg * Math.PI / 180;
@@ -103,30 +109,38 @@
       if (baseLat === null || baseLon === null) {
         baseLat = lat;
         baseLon = lon;
-        status.textContent = "Position locked. Move around.";
+        status.textContent = "Position locked. Move around within 10 meters.";
         return;
       }
 
       freqMin = parseFloat(document.getElementById("freqMinInput").value) || 200;
       freqMax = parseFloat(document.getElementById("freqMaxInput").value) || 2000;
 
-      const distance = haversineDistance(baseLat, baseLon, lat, lon);
-      const clampedDistance = Math.min(distance, 100); // cap to 100m
-      const freq = freqMin + (freqMax - freqMin) * (clampedDistance / 100);
-      if (osc) osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      let distance = haversineDistance(baseLat, baseLon, lat, lon);
+      distance = Math.min(distance, 10); // cap max distance to 10 meters
+
+      // Logarithmic frequency mapping
+      const logFreqMin = Math.log(freqMin);
+      const logFreqMax = Math.log(freqMax);
+      const logFreq = logFreqMin + (logFreqMax - logFreqMin) * (distance / 10);
+      const freq = Math.exp(logFreq);
+
+      if (osc && audioCtx) {
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      }
       updateVisual(freq);
 
       const midiNote = frequencyToMidiNote(freq);
       sendMidiNoteOn(midiNote);
 
-      status.textContent = `Distance: ${distance.toFixed(2)} m — Freq: ${Math.round(freq)} Hz — Note: ${midiNote}`;
+      status.textContent = `Distance: ${distance.toFixed(2)} m | Frequency: ${freq.toFixed(1)} Hz | MIDI Note: ${midiNote}`;
     }
 
     function onPositionError(err) {
       status.textContent = `Geolocation Error: ${err.message}`;
     }
 
-    // MIDI INIT
+    // MIDI Initialization
     navigator.requestMIDIAccess().then(access => {
       midiAccess = access;
       const outputSelect = document.getElementById("midiSelect");
@@ -141,22 +155,23 @@
         const selectedID = outputSelect.value;
         midiOutput = [...midiAccess.outputs.values()].find(output => output.id === selectedID) || null;
       });
+    }).catch(() => {
+      status.textContent = "No MIDI access available.";
     });
 
     document.getElementById("startButton").addEventListener("click", () => {
-      startAudio();
+      if (!audioCtx) startAudio();
       freqMin = parseFloat(document.getElementById("freqMinInput").value);
       freqMax = parseFloat(document.getElementById("freqMaxInput").value);
       status.textContent = "Waiting for GPS lock...";
 
+      if (watchID !== null) {
+        navigator.geolocation.clearWatch(watchID);
+      }
       watchID = navigator.geolocation.watchPosition(
         onPositionUpdate,
         onPositionError,
-        {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: 5000
-        }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
       );
     });
 
@@ -166,3 +181,4 @@
   </script>
 </body>
 </html>
+
