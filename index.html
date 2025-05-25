@@ -2,29 +2,73 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>GPS Distance Synth</title>
+  <title>GPS Distance Synth with MIDI</title>
   <style>
     body { font-family: sans-serif; text-align: center; margin: 2em; }
     canvas { border: 1px solid black; margin-top: 1em; }
+    label { display: block; margin-top: 1em; }
   </style>
 </head>
 <body>
-  <h1>GPS Distance Synth</h1>
+  <h1>Distance-Based Synth</h1>
+  
   <button id="startButton">Start Synth</button>
+  
+  <label>
+    Min Frequency (Hz):
+    <input type="number" id="freqMinInput" value="200">
+  </label>
+  
+  <label>
+    Max Frequency (Hz):
+    <input type="number" id="freqMaxInput" value="2000">
+  </label>
+
+  <label>
+    Select MIDI Output:
+    <select id="midiSelect"><option>None</option></select>
+  </label>
+
   <p id="status">Waiting for user interaction...</p>
   <canvas id="visual" width="300" height="100"></canvas>
 
   <script>
     let audioCtx, osc, gain;
     let baseLat = null, baseLon = null;
-    let freqMin = 200;
-    let freqMax = 2000;
+    let freqMin = 200, freqMax = 2000;
     let watchID = null;
 
     const status = document.getElementById("status");
     const canvas = document.getElementById("visual");
     const ctx = canvas.getContext("2d");
 
+    let midiAccess = null;
+    let midiOutput = null;
+    let currentMidiNote = null;
+
+    // MIDI helpers
+    function frequencyToMidiNote(freq) {
+      return Math.round(69 + 12 * Math.log2(freq / 440));
+    }
+
+    function sendMidiNoteOn(note) {
+      if (midiOutput && note !== currentMidiNote) {
+        if (currentMidiNote !== null) {
+          midiOutput.send([0x80, currentMidiNote, 0x40]); // noteOff
+        }
+        midiOutput.send([0x90, note, 0x7f]); // noteOn
+        currentMidiNote = note;
+      }
+    }
+
+    function sendMidiNoteOff() {
+      if (midiOutput && currentMidiNote !== null) {
+        midiOutput.send([0x80, currentMidiNote, 0x40]);
+        currentMidiNote = null;
+      }
+    }
+
+    // Audio and UI
     function startAudio() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       osc = audioCtx.createOscillator();
@@ -46,9 +90,9 @@
       const toRad = deg => deg * Math.PI / 180;
       const dLat = toRad(lat2 - lat1);
       const dLon = toRad(lon2 - lon1);
-      const a = Math.sin(dLat/2)**2 +
+      const a = Math.sin(dLat / 2) ** 2 +
                 Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-                Math.sin(dLon/2)**2;
+                Math.sin(dLon / 2) ** 2;
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
@@ -63,22 +107,48 @@
         return;
       }
 
+      freqMin = parseFloat(document.getElementById("freqMinInput").value) || 200;
+      freqMax = parseFloat(document.getElementById("freqMaxInput").value) || 2000;
+
       const distance = haversineDistance(baseLat, baseLon, lat, lon);
-      const clampedDistance = Math.min(distance, 100); // cap to 100m for mapping
+      const clampedDistance = Math.min(distance, 100); // cap to 100m
       const freq = freqMin + (freqMax - freqMin) * (clampedDistance / 100);
       if (osc) osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-
-      status.textContent = `Distance: ${distance.toFixed(2)} m — Frequency: ${Math.round(freq)} Hz`;
       updateVisual(freq);
+
+      const midiNote = frequencyToMidiNote(freq);
+      sendMidiNoteOn(midiNote);
+
+      status.textContent = `Distance: ${distance.toFixed(2)} m — Freq: ${Math.round(freq)} Hz — Note: ${midiNote}`;
     }
 
     function onPositionError(err) {
       status.textContent = `Geolocation Error: ${err.message}`;
     }
 
+    // MIDI INIT
+    navigator.requestMIDIAccess().then(access => {
+      midiAccess = access;
+      const outputSelect = document.getElementById("midiSelect");
+      for (let output of midiAccess.outputs.values()) {
+        const option = document.createElement("option");
+        option.text = output.name;
+        option.value = output.id;
+        outputSelect.add(option);
+      }
+
+      outputSelect.addEventListener("change", () => {
+        const selectedID = outputSelect.value;
+        midiOutput = [...midiAccess.outputs.values()].find(output => output.id === selectedID) || null;
+      });
+    });
+
     document.getElementById("startButton").addEventListener("click", () => {
       startAudio();
+      freqMin = parseFloat(document.getElementById("freqMinInput").value);
+      freqMax = parseFloat(document.getElementById("freqMaxInput").value);
       status.textContent = "Waiting for GPS lock...";
+
       watchID = navigator.geolocation.watchPosition(
         onPositionUpdate,
         onPositionError,
@@ -89,8 +159,10 @@
         }
       );
     });
+
+    window.addEventListener("beforeunload", () => {
+      sendMidiNoteOff();
+    });
   </script>
 </body>
 </html>
-
-
